@@ -151,7 +151,12 @@ async fn serve_websocket<T: Serialize + Send + 'static, U: DeserializeOwned + Se
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let addr: std::net::SocketAddr = "[::1]:8080".parse()?;
+    dotenvy::dotenv()?;
+    
+    let mut addr: std::net::SocketAddr = "[::1]:8080".parse()?;
+    if let Ok(port) = std::env::var("PORT") {
+        addr.set_port(port.parse()?);
+    }
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("listening on http://{addr}");
 
