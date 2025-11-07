@@ -1,7 +1,15 @@
 mod game;
 mod lobby;
 
-use std::{sync::Arc, time::Duration};
+use tracing_subscriber::prelude::*;
+
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use futures_util::{FutureExt, SinkExt, StreamExt as _};
 use http_body_util::Full;
@@ -17,6 +25,8 @@ use hyper_util::{
 use indoc::indoc;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::mpsc;
+use tracing::{error, info, level_filters::LevelFilter};
+use tracing_subscriber::EnvFilter;
 
 use crate::{game::RunningGames, lobby::Lobby};
 
@@ -32,7 +42,7 @@ pub trait WsHandler {
     type Clientbound: Serialize;
 
     fn receive(&mut self, message: Self::Serverbound) -> impl Future<Output = ()> + Send;
-    fn close(&mut self) -> impl Future<Output = ()>;
+    fn close(&mut self) -> impl Future<Output = ()> + Send;
     fn set_send_handler(&mut self, handler: Box<dyn Fn(Self::Clientbound) + Send + Sync>);
 }
 
@@ -48,7 +58,7 @@ async fn handle_request(
 
             tokio::spawn(async move {
                 if let Err(e) = serve_websocket(websocket, lobby.new_handler()).await {
-                    eprintln!("error in websocket connection: {e}");
+                    error!("error in websocket connection: {e}");
                 }
             });
 
@@ -79,7 +89,7 @@ async fn handle_request(
 
             tokio::spawn(async move {
                 if let Err(e) = serve_websocket(websocket, handler).await {
-                    eprintln!("error in websocket connection: {e}");
+                    error!("error in websocket connection: {e}");
                 }
             });
 
@@ -114,9 +124,15 @@ async fn serve_websocket<T: Serialize + Send + 'static, U: DeserializeOwned + Se
 ) -> anyhow::Result<()> {
     let mut websocket = websocket.await?;
     let (tx, mut rx) = mpsc::unbounded_channel::<T>();
-    handler.set_send_handler(Box::new(move |x| {
-        tx.send(x).ok();
-    }));
+    let is_closing = Arc::new(AtomicBool::new(false));
+    {
+        let is_closing = is_closing.clone();
+        handler.set_send_handler(Box::new(move |x| {
+            if !is_closing.load(Ordering::Relaxed) {
+                tx.send(x).ok();
+            }
+        }));
+    }
     loop {
         futures_util::select! {
             outbound = rx.recv().fuse() => if let Some(x) = outbound {
@@ -138,6 +154,10 @@ async fn serve_websocket<T: Serialize + Send + 'static, U: DeserializeOwned + Se
                             }))?.into())).await?,
                         }
                     }
+                    Message::Close(_) => {
+                        is_closing.store(true, Ordering::Relaxed);
+                        handler.close().await;
+                    }
                     _ => {}
                 }
             } else {
@@ -151,14 +171,22 @@ async fn serve_websocket<T: Serialize + Send + 'static, U: DeserializeOwned + Se
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv()?;
-    
+    dotenvy::dotenv().ok();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .try_init()?;
+
     let mut addr: std::net::SocketAddr = "[::1]:8080".parse()?;
     if let Ok(port) = std::env::var("PORT") {
         addr.set_port(port.parse()?);
     }
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("listening on http://{addr}");
+    info!("listening on http://{addr}");
 
     let running_games = Arc::new(RunningGames::new());
     let lobby = Arc::new(Lobby::new(running_games.clone()));
@@ -183,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
                 );
 
                 if let Err(e) = connection.await {
-                    println!("error serving HTTP connection: {e}");
+                    error!("error serving HTTP connection: {e}");
                 }
             }
         });

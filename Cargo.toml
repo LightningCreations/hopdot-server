@@ -2,6 +2,7 @@
 name = "hopdot-server-alternate"
 version = "0.1.0"
 edition = "2024"
+authors = ["Ray Redondo (rdredondo@lcdev.xyz)"]
 
 [dependencies]
 anyhow = "1.0.100"
@@ -19,3 +20,5 @@ rand = "0.9.2"
 rustrict = "0.7.36"
 serde = { version = "1.0.226", features = ["derive"] }
 tokio = { version = "1.47.1", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }

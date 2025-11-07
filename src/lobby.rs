@@ -6,6 +6,7 @@ use std::{
 use rand::{Rng, distr::Uniform};
 use rustrict::CensorStr as _;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 use crate::{GameSettings, WsHandler, game::RunningGames};
 
@@ -112,6 +113,7 @@ impl WsHandler for LobbyHandler {
                                 settings,
                                 sockets: vec![self.sender.clone().unwrap()],
                             });
+                            info!("created room with code {code}");
                             self.send(LobbyClientbound::Created { code });
                             break;
                         }
@@ -122,10 +124,12 @@ impl WsHandler for LobbyHandler {
                 if let Entry::Occupied(mut room) =
                     self.lobby_data.lock().unwrap().rooms.entry(code.clone())
                 {
+                    info!("new player joining room {code}");
                     let room_inner = room.get_mut();
                     room_inner.sockets.push(self.sender.clone().unwrap());
                     if room_inner.sockets.len() == room_inner.settings.capacity as usize {
                         let room = room.remove();
+                        info!("room {code} filled, announcing room settings");
                         for sender in &room.sockets {
                             sender(LobbyClientbound::Ready {
                                 code: code.clone(),
@@ -144,6 +148,7 @@ impl WsHandler for LobbyHandler {
     // Clippy bug, or at least bad suggestion
     #[allow(clippy::significant_drop_tightening)]
     async fn close(&mut self) {
+        info!("player left, clearing any rooms they were in");
         let mut data = self.lobby_data.lock().unwrap();
         let rooms: Vec<_> = data
             .rooms
@@ -159,8 +164,10 @@ impl WsHandler for LobbyHandler {
         for (idx, code) in rooms {
             let room = data.rooms.get_mut(&code).unwrap();
             if room.sockets.len() == 1 {
+                debug!("player was alone in room {code}, removing the room");
                 data.rooms.remove(&code);
             } else {
+                debug!("player was not alone in room {code}, removing them");
                 room.sockets.remove(idx);
             }
         }
